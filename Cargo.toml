@@ -1,8 +1,8 @@
 [package]
-name = "eframe_template"
-version = "0.1.0"
-authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
-edition = "2021"
+name = "bs_song_manager"
+version = "0.0.1"
+authors = ["Kagurazaka Nyaa <dev@kagurazakanyaa.com>"]
+edition = "2022"
 rust-version = "1.60"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
