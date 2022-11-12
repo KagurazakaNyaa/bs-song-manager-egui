@@ -1,4 +1,4 @@
-#![warn(clippy::all, rust_2018_idioms)]
+#![warn(clippy::all)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 fn main() {
@@ -7,9 +7,8 @@ fn main() {
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "eframe template",
+        "BeatSaber Song Manager",
         native_options,
-        Box::new(|cc| Box::new(bs_song_manager::TemplateApp::new(cc))),
+        Box::new(|cc| Box::new(bs_song_manager::ManagerApp::new(cc))),
     );
 }
-
