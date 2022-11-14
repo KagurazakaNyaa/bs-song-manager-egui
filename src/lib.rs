@@ -117,72 +117,70 @@ impl Song {
             }
         };
         let mut hash_data: Vec<u8> = Vec::new();
-        for entry in file_list {
-            if let Ok(entry) = entry {
-                if !entry.path().is_file() || !entry.file_name().eq_ignore_ascii_case("info.dat") {
-                    continue;
-                }
-                let infodat_file = File::open(entry.path());
-                let mut infodat_file = match infodat_file {
-                    Ok(file) => file,
-                    Err(error) => {
-                        error!("Got error on read info.dat {}", error);
-                        return None;
-                    }
-                };
-                let mut buffer = String::new();
-                if let Err(error) = infodat_file.read_to_string(&mut buffer) {
+        for entry in file_list.flatten() {
+            if !entry.path().is_file() || !entry.file_name().eq_ignore_ascii_case("info.dat") {
+                continue;
+            }
+            let infodat_file = File::open(entry.path());
+            let mut infodat_file = match infodat_file {
+                Ok(file) => file,
+                Err(error) => {
                     error!("Got error on read info.dat {}", error);
                     return None;
+                }
+            };
+            let mut buffer = String::new();
+            if let Err(error) = infodat_file.read_to_string(&mut buffer) {
+                error!("Got error on read info.dat {}", error);
+                return None;
+            };
+            hash_data.extend(buffer.as_bytes());
+            let infodat: Result<Value, serde_json::Error> = serde_json::from_str(&buffer);
+            let infodat = match infodat {
+                Ok(infodat) => infodat,
+                Err(error) => {
+                    error!("Got error on read info.dat {}", error);
+                    return None;
+                }
+            };
+            let mut difficulty_beatmap_sets = Vec::new();
+            for difficulty_beatmap_set in infodat["_difficultyBeatmapSets"].as_array()? {
+                let data = match DifficultyBeatmapSet::new(difficulty_beatmap_set) {
+                    Some(data) => data,
+                    None => return None,
                 };
-                hash_data.extend(buffer.as_bytes());
-                let infodat: Result<Value, serde_json::Error> = serde_json::from_str(&buffer);
-                let infodat = match infodat {
-                    Ok(infodat) => infodat,
-                    Err(error) => {
-                        error!("Got error on read info.dat {}", error);
-                        return None;
-                    }
-                };
-                let mut difficulty_beatmap_sets = Vec::new();
-                for difficulty_beatmap_set in infodat["_difficultyBeatmapSets"].as_array()? {
-                    let data = match DifficultyBeatmapSet::new(difficulty_beatmap_set) {
-                        Some(data) => data,
-                        None => return None,
-                    };
-                    for beatmap in &data.difficulty_beatmaps {
-                        let mut beatmap_file_path = song_path.clone();
-                        beatmap_file_path.push(beatmap.beatmap_filename.clone());
-                        let beatmap_file = File::open(beatmap_file_path);
-                        let mut beatmap_file = match beatmap_file {
-                            Ok(file) => file,
-                            Err(error) => {
-                                error!("Got error on read beatmap file {}", error);
-                                return None;
-                            }
-                        };
-                        let mut buffer = String::new();
-                        if let Err(error) = beatmap_file.read_to_string(&mut buffer) {
+                for beatmap in &data.difficulty_beatmaps {
+                    let mut beatmap_file_path = song_path.clone();
+                    beatmap_file_path.push(beatmap.beatmap_filename.clone());
+                    let beatmap_file = File::open(beatmap_file_path);
+                    let mut beatmap_file = match beatmap_file {
+                        Ok(file) => file,
+                        Err(error) => {
                             error!("Got error on read beatmap file {}", error);
                             return None;
                         }
-                        hash_data.extend(buffer.as_bytes());
+                    };
+                    let mut buffer = String::new();
+                    if let Err(error) = beatmap_file.read_to_string(&mut buffer) {
+                        error!("Got error on read beatmap file {}", error);
+                        return None;
                     }
-                    difficulty_beatmap_sets.push(data);
+                    hash_data.extend(buffer.as_bytes());
                 }
-                let result = Song {
-                    song_folder_path: song_path.to_path_buf(),
-                    song_name: infodat["_songName"].as_str()?.to_string(),
-                    song_author_name: infodat["_songAuthorName"].as_str()?.to_string(),
-                    level_author_name: infodat["_levelAuthorName"].as_str()?.to_string(),
-                    beats_per_minute: infodat["_beatsPerMinute"].as_u64()?,
-                    song_filename: infodat["_songFilename"].as_str()?.to_string(),
-                    cover_image_filename: infodat["_coverImageFilename"].as_str()?.to_string(),
-                    difficulty_beatmap_sets,
-                    level_hash: hash_string(&hash_data),
-                };
-                return Some(result);
+                difficulty_beatmap_sets.push(data);
             }
+            let result = Song {
+                song_folder_path: song_path.to_path_buf(),
+                song_name: infodat["_songName"].as_str()?.to_string(),
+                song_author_name: infodat["_songAuthorName"].as_str()?.to_string(),
+                level_author_name: infodat["_levelAuthorName"].as_str()?.to_string(),
+                beats_per_minute: infodat["_beatsPerMinute"].as_u64()?,
+                song_filename: infodat["_songFilename"].as_str()?.to_string(),
+                cover_image_filename: infodat["_coverImageFilename"].as_str()?.to_string(),
+                difficulty_beatmap_sets,
+                level_hash: hash_string(&hash_data),
+            };
+            return Some(result);
         }
         None
     }

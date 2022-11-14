@@ -84,8 +84,8 @@ impl eframe::App for ManagerApp {
             egui::menu::bar(ui, |ui| {
                 if ui.button(t!("ui.open_song_folder")).clicked() {
                     let select_dir = FileDialog::new().pick_folder();
-                    if select_dir.is_some() {
-                        *song_folder = select_dir.unwrap();
+                    if let Some(select_dir) = select_dir {
+                        *song_folder = select_dir;
                         *song_list = generate_song_list(song_folder);
                         if let Some(sink) = sink {
                             sink.stop();
