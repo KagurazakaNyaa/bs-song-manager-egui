@@ -166,16 +166,16 @@ impl eframe::App for ManagerApp {
                         );
                     });
                     ui.separator();
-                    ui.label(t!("ui.level_hash", hash = &current_song.level_hash));
-                    if ui
-                        .button("📋")
-                        .on_hover_text(t!("ui.click_to_copy"))
-                        .clicked()
-                    {
-                        ui.output().copied_text = current_song.level_hash.to_string();
-                    }
-                    ui.separator();
                 }
+                ui.label(t!("ui.level_hash", hash = &current_song.level_hash));
+                if ui
+                    .button("📋")
+                    .on_hover_text(t!("ui.click_to_copy"))
+                    .clicked()
+                {
+                    ui.output().copied_text = current_song.level_hash.to_string();
+                }
+                ui.separator();
             } else {
                 ui.heading(t!("ui.no_song_hint"));
             }
