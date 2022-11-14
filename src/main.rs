@@ -16,7 +16,7 @@ fn main() {
     info!("Detected locale is {}", current_locale);
     match current_locale.as_str() {
         "en" | "zh-CN" => rust_i18n::set_locale(current_locale.as_str()),
-        _ => warn!("Unsoppted locale, fallback to en."),
+        _ => warn!("Unsupport locale, fallback to en."),
     }
 
     let native_options = eframe::NativeOptions::default();

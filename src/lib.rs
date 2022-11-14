@@ -4,7 +4,7 @@ extern crate rust_i18n;
 i18n!("locales");
 
 mod app;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::{
@@ -238,6 +238,10 @@ fn generate_song_list(song_path: &Path) -> Vec<Song> {
         if song_folder_path.is_dir() {
             if let Some(song) = Song::from_path(&song_folder_path) {
                 song_list.push(song);
+                debug!(
+                    "Loaded song from {} successful.",
+                    &song_folder_path.as_path().display()
+                );
             }
         } else {
             warn!(
