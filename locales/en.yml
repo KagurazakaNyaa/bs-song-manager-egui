@@ -1,0 +1,15 @@
+en:
+  app_name: "BeatSaber Song Manager"
+  ui:
+    open_song_folder: "Open"
+    current_working_folder: "Current Working Path: "
+    no_song_hint: "No selected song."
+    song_list_title: "Song List"
+    song_author: "Song Author: %{author}"
+    level_author: "Level Author: %{author}"
+    bpm: "BPM: %{bpm}"
+    difficulty_rank: "Difficulty Rank: %{rank}"
+    level_hash: "Level Hash: %{hash}"
+    click_to_copy: "Click to Copy"
+    play: "Play"
+    stop: "Stop"

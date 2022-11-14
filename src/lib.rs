@@ -1,6 +1,10 @@
 #![warn(clippy::all)]
+#[macro_use]
+extern crate rust_i18n;
+i18n!("locales");
 
 mod app;
+use log::{error, info, warn};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::{
@@ -92,7 +96,6 @@ impl DifficultyBeatmapSet {
 pub struct Song {
     song_folder_path: PathBuf,
     song_name: String,
-    version: String,
     song_author_name: String,
     level_author_name: String,
     beats_per_minute: u64,
@@ -108,7 +111,10 @@ impl Song {
         let file_list = fs::read_dir(song_path);
         let file_list = match file_list {
             Ok(entry) => entry,
-            Err(_) => return None,
+            Err(error) => {
+                error!("Got error on read file list {}", error);
+                return None;
+            }
         };
         let mut hash_data: Vec<u8> = Vec::new();
         for entry in file_list {
@@ -119,17 +125,24 @@ impl Song {
                 let infodat_file = File::open(entry.path());
                 let mut infodat_file = match infodat_file {
                     Ok(file) => file,
-                    Err(_) => return None,
+                    Err(error) => {
+                        error!("Got error on read info.dat {}", error);
+                        return None;
+                    }
                 };
                 let mut buffer = String::new();
-                if let Err(_) = infodat_file.read_to_string(&mut buffer) {
+                if let Err(error) = infodat_file.read_to_string(&mut buffer) {
+                    error!("Got error on read info.dat {}", error);
                     return None;
                 };
                 hash_data.extend(buffer.as_bytes());
                 let infodat: Result<Value, serde_json::Error> = serde_json::from_str(&buffer);
                 let infodat = match infodat {
                     Ok(infodat) => infodat,
-                    Err(_) => return None,
+                    Err(error) => {
+                        error!("Got error on read info.dat {}", error);
+                        return None;
+                    }
                 };
                 let mut difficulty_beatmap_sets = Vec::new();
                 for difficulty_beatmap_set in infodat["_difficultyBeatmapSets"].as_array()? {
@@ -143,10 +156,14 @@ impl Song {
                         let beatmap_file = File::open(beatmap_file_path);
                         let mut beatmap_file = match beatmap_file {
                             Ok(file) => file,
-                            Err(_) => return None,
+                            Err(error) => {
+                                error!("Got error on read beatmap file {}", error);
+                                return None;
+                            }
                         };
                         let mut buffer = String::new();
-                        if let Err(_) = beatmap_file.read_to_string(&mut buffer) {
+                        if let Err(error) = beatmap_file.read_to_string(&mut buffer) {
+                            error!("Got error on read beatmap file {}", error);
                             return None;
                         }
                         hash_data.extend(buffer.as_bytes());
@@ -156,7 +173,6 @@ impl Song {
                 let result = Song {
                     song_folder_path: song_path.to_path_buf(),
                     song_name: infodat["_songName"].as_str()?.to_string(),
-                    version: infodat["_version"].as_str()?.to_string(),
                     song_author_name: infodat["_songAuthorName"].as_str()?.to_string(),
                     level_author_name: infodat["_levelAuthorName"].as_str()?.to_string(),
                     beats_per_minute: infodat["_beatsPerMinute"].as_u64()?,
@@ -166,8 +182,6 @@ impl Song {
                     level_hash: hash_string(&hash_data),
                 };
                 return Some(result);
-            } else {
-                continue;
             }
         }
         None
@@ -178,13 +192,29 @@ impl Song {
         let cover_image_file = File::open(cover_image_path);
         let mut cover_image_file = match cover_image_file {
             Ok(file) => file,
-            Err(_) => return None,
+            Err(error) => {
+                error!("Got error on load cover {}", error);
+                return None;
+            }
         };
         let mut buffer = Vec::new();
-        if let Err(_) = cover_image_file.read_to_end(&mut buffer) {
+        if let Err(error) = cover_image_file.read_to_end(&mut buffer) {
+            error!("Got error on load cover {}", error);
             return None;
         }
         Some(buffer)
+    }
+    fn read_song_file(&self) -> Option<File> {
+        let mut song_file_path = self.song_folder_path.clone();
+        song_file_path.push(&self.song_filename);
+        info!("Loading ogg file {}", &song_file_path.as_path().display());
+        match File::open(song_file_path) {
+            Ok(song_file) => Some(song_file),
+            Err(error) => {
+                error!("Got error on load ogg {}", error);
+                None
+            }
+        }
     }
 }
 
@@ -193,18 +223,29 @@ fn generate_song_list(song_path: &Path) -> Vec<Song> {
     let song_path_entry = fs::read_dir(song_path);
     let song_path_entry = match song_path_entry {
         Ok(entry) => entry,
-        Err(_) => return song_list,
+        Err(error) => {
+            error!("Got error on load song path {}", error);
+            return song_list;
+        }
     };
     for entry in song_path_entry {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(error) => {
+                warn!("Some entry read failed.{}", error);
+                continue;
+            }
         };
         let song_folder_path = entry.path();
         if song_folder_path.is_dir() {
             if let Some(song) = Song::from_path(&song_folder_path) {
                 song_list.push(song);
             }
+        } else {
+            warn!(
+                "Entry {} is not directory",
+                song_folder_path.as_path().display()
+            );
         }
     }
     song_list

@@ -1,8 +1,9 @@
-use std::path::PathBuf;
-
-use egui::{RichText, Vec2};
+use egui::Vec2;
 use egui_extras::RetainedImage;
 use rfd::FileDialog;
+use rodio::{Decoder, OutputStream, Sink};
+use rust_i18n::t;
+use std::{io::BufReader, path::PathBuf};
 
 use crate::{generate_song_list, Song};
 fn setup_custom_fonts(ctx: &egui::Context) {
@@ -38,6 +39,7 @@ pub struct ManagerApp {
     song_folder: PathBuf,
     song_list: Vec<Song>,
     current_song: Option<Song>,
+    sink: Option<Sink>,
 }
 
 impl Default for ManagerApp {
@@ -46,6 +48,7 @@ impl Default for ManagerApp {
             song_folder: std::env::current_dir().unwrap(),
             song_list: Vec::new(),
             current_song: None,
+            sink: None,
         }
     }
 }
@@ -68,6 +71,7 @@ impl eframe::App for ManagerApp {
             song_folder,
             song_list,
             current_song,
+            sink,
         } = self;
 
         // Examples of how to create different panels and windows.
@@ -78,22 +82,25 @@ impl eframe::App for ManagerApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
-                if ui.button("Open").clicked() {
+                if ui.button(t!("ui.open_song_folder")).clicked() {
                     let select_dir = FileDialog::new().pick_folder();
                     if select_dir.is_some() {
                         *song_folder = select_dir.unwrap();
                         *song_list = generate_song_list(song_folder);
+                        if let Some(sink) = sink {
+                            sink.stop();
+                        }
+                        *sink = None;
                     }
                 }
-                ui.label("Current Working Path: ");
+                ui.label(t!("ui.current_working_folder"));
                 ui.label(&(*song_folder.as_path().display().to_string()));
             });
         });
 
         egui::SidePanel::left("side_panel").show(ctx, |ui| {
-            ui.heading("Song List");
+            ui.heading(t!("ui.song_list_title"));
 
-            let text = format!("Total {} songs.", song_list.len());
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
@@ -102,23 +109,33 @@ impl eframe::App for ManagerApp {
                             ui.separator();
                             if ui.link(&song.song_name).clicked() {
                                 *current_song = Some(song.clone());
+                                if let Some(sink) = sink {
+                                    sink.stop();
+                                }
+                                *sink = None;
                             }
                         }
                         ui.separator();
                     })
                 });
-            ui.heading(text);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(current_song) = current_song {
                 ui.heading(&current_song.song_name);
-                ui.label(RichText::new(format!("version: {}", &current_song.version)).size(12.0));
                 ui.end_row();
-                ui.label(format!("Level Hash: {}", &current_song.level_hash));
-                ui.label(format!("Song Author: {}", &current_song.song_author_name));
-                ui.label(format!("Level Author: {}", &current_song.level_author_name));
-                ui.label(format!("BPM: {}", &current_song.beats_per_minute));
+                ui.label(t!(
+                    "ui.song_author",
+                    author = &current_song.song_author_name
+                ));
+                ui.label(t!(
+                    "ui.level_author",
+                    author = &current_song.level_author_name
+                ));
+                ui.label(t!(
+                    "ui.bpm",
+                    bpm = &current_song.beats_per_minute.to_string()
+                ));
                 ui.end_row();
                 if let Some(image) = current_song.read_cover_image() {
                     let image = RetainedImage::from_image_bytes("cover", &image[..]).unwrap();
@@ -128,11 +145,67 @@ impl eframe::App for ManagerApp {
                     ));
                 }
                 ui.end_row();
+                ui.separator();
+                for difficulty_beatmap_set in &current_song.difficulty_beatmap_sets {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.collapsing(
+                            difficulty_beatmap_set.beatmap_characteristic_name.as_str(),
+                            |ui| {
+                                for difficulty_beatmap in
+                                    &difficulty_beatmap_set.difficulty_beatmaps
+                                {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        ui.label(&difficulty_beatmap.difficulty).on_hover_text(t!(
+                                            "ui.difficulty_rank",
+                                            rank = &difficulty_beatmap.difficulty_rank.to_string()
+                                        ));
+                                    });
+                                }
+                            },
+                        );
+                    });
+                    ui.separator();
+                    ui.label(t!("ui.level_hash", hash = &current_song.level_hash));
+                    if ui
+                        .button("📋")
+                        .on_hover_text(t!("ui.click_to_copy"))
+                        .clicked()
+                    {
+                        ui.output().copied_text = current_song.level_hash.to_string();
+                    }
+                    ui.separator();
+                }
             } else {
-                ui.heading("No selected song.");
+                ui.heading(t!("ui.no_song_hint"));
             }
-
             egui::warn_if_debug_build(ui);
+        });
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+            if let Some(song) = current_song {
+                if ui.button(t!("ui.play")).clicked() {
+                    if let Some(song_file) = song.read_song_file() {
+                        if let Ok(source) = Decoder::new_vorbis(BufReader::new(song_file)) {
+                            if let Some(sink) = sink {
+                                sink.append(source);
+                                sink.play();
+                            } else {
+                                let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+                                let newsink = Sink::try_new(&stream_handle).unwrap();
+                                newsink.append(source);
+                                newsink.play();
+                                *sink = Some(newsink);
+                            }
+                        }
+                    }
+                }
+                if ui.button(t!("ui.stop")).clicked() {
+                    if let Some(sink) = sink {
+                        sink.stop();
+                    }
+                    *sink = None;
+                }
+            }
         });
     }
 }
