@@ -9,9 +9,9 @@ This is a tool for managing Beat Saber game song level files. It is used to orga
 
 - [x] List all song from working directory
 - [x] Show song detail
-- [ ] Preview play song
-- [ ] Delete song
-- [ ] Change song folder name
+- [x] Preview play song
+- [x] Delete song
+- [x] Change song folder name
 - [ ] Export `.bplist` playlist
 - [ ] Clear working directory
 
