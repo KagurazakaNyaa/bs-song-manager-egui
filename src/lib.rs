@@ -11,8 +11,9 @@ use native_tls::{TlsConnector, TlsStream};
 use regex::Regex;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
+use std::collections::VecDeque;
 use std::fs::{read_dir, File};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::RwLock;
 use std::thread;
@@ -24,7 +25,8 @@ use std::{
     sync::Arc,
 };
 
-static CONCURRENT_THREADS: usize = 16;
+static CONCURRENT_THREADS_MAX: usize = 16;
+static CONCURRENT_THREADS_MIN: usize = 8;
 static DEFAULT_ID: &str = "00000";
 static BEATSAVER_DOMAIN: &str = "api.beatsaver.com";
 static BEATSAVER_ADDR: &str = "api.beatsaver.com:443";
@@ -54,23 +56,49 @@ fn get_id_by_hash(hash: &str) -> String {
         }
     };
     debug!("Get connection successful.");
-    debug!("Sending request {}.", request);
+    debug!("Sending request...\n{}", request);
     if let Err(error) = stream.write_all(request.as_bytes()) {
         warn!("Failed to send request to api server.{}", error);
         return default_id;
     }
     debug!("Send request done.");
-    let mut resp = vec![];
-    stream.read_to_end(&mut resp).unwrap();
-    let body = String::from_utf8_lossy(&resp);
-    let body = match body.find("\r\n\r\n") {
-        Some(index) => body[index..].to_string(),
-        None => {
-            warn!("Failed to parse response.{}", body);
-            return default_id;
+    let mut reader = BufReader::new(stream);
+    let mut bytes_to_read: usize = 0;
+    loop {
+        let mut buf = vec![];
+        if let Err(error) = reader.read_until(b'\n', &mut buf) {
+            warn!("Got error when reading http head.{}", error);
+            break;
         }
-    };
-    debug!("API server return response {}", body);
+        let head = String::from_utf8_lossy(&buf);
+        debug!("Read head from server: {}", head);
+        if head.starts_with("Content-Length:") {
+            bytes_to_read = match head.split(": ").nth(1) {
+                Some(str) => match str.trim().parse::<usize>() {
+                    Ok(size) => size,
+                    Err(error) => {
+                        warn!("Failed to parse Content-Length.{}", error);
+                        return default_id;
+                    }
+                },
+                None => {
+                    warn!("Failed to parse Content-Length.");
+                    return default_id;
+                }
+            };
+            debug!("bytes_to_read={}", bytes_to_read);
+        }
+        if head.trim().is_empty() {
+            break;
+        }
+    }
+    let mut resp = vec![0u8; bytes_to_read];
+    if let Err(error) = reader.read_exact(&mut resp) {
+        warn!("Got error when reading http body.{}", error);
+        return default_id;
+    }
+    let body = String::from_utf8_lossy(&resp);
+    debug!("API server return response.\n{}", body);
 
     let content: Value = match serde_json::from_str(body.as_ref()) {
         Ok(content) => content,
@@ -408,16 +436,20 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
         }
     }
 
-    let mut task_pending = Vec::new();
+    let mut task_pending = VecDeque::new();
     for task in task_list {
-        if task_pending.len() < CONCURRENT_THREADS {
+        if task_pending.len() < CONCURRENT_THREADS_MAX {
             let task = thread::spawn(task);
-            task_pending.push(task);
+            task_pending.push_back(task);
         } else {
-            for task in task_pending {
-                task.join().unwrap();
+            while task_pending.len() > CONCURRENT_THREADS_MIN {
+                task_pending.pop_front().unwrap().join().unwrap();
             }
-            task_pending = Vec::new()
+        }
+    }
+    if !task_pending.is_empty() {
+        for task in task_pending {
+            task.join().unwrap();
         }
     }
 
