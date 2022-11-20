@@ -18,7 +18,7 @@ fn setup_custom_fonts(ctx: &egui::Context) {
     // .ttf and .otf files supported.
     fonts.font_data.insert(
         "source_ttf".to_owned(),
-        egui::FontData::from_static(include_bytes!("../fonts/SourceHanSansHW-VF.ttf.ttc")),
+        egui::FontData::from_static(include_bytes!("../fonts/NotoSansCJK-VF.otf.ttc")),
     );
 
     // Put my font first (highest priority) for proportional text:
