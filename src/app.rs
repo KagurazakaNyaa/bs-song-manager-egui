@@ -3,7 +3,6 @@ use egui_extras::{RetainedImage, Size, TableBuilder};
 use log::warn;
 use rfd::FileDialog;
 use rodio::{OutputStream, OutputStreamHandle, Sink};
-use rust_i18n::t;
 use std::io::BufReader;
 use std::{
     collections::{HashMap, HashSet},
@@ -102,26 +101,26 @@ impl eframe::App for ManagerApp {
         } = self;
 
         if *list_outdated {
-            (*song_list, *invalid_path) = generate_song_list(&song_folder);
+            (*song_list, *invalid_path) = generate_song_list(song_folder);
             *list_outdated = false;
         }
 
         egui::TopBottomPanel::top("menu_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                if ui.button(t!("ui.open_song_folder")).clicked() {
+                if ui.button(t!("open_song_folder")).clicked() {
                     let select_dir = FileDialog::new().pick_folder();
                     if let Some(select_dir) = select_dir {
                         *song_folder = select_dir;
                         *list_outdated = true;
                     }
                 }
-                ui.label(t!("ui.current_working_folder"));
+                ui.label(t!("current_working_folder"));
                 ui.label(&(*song_folder.as_path().display().to_string()));
             });
         });
 
         egui::SidePanel::left("song_list_panel").show(ctx, |ui| {
-            ui.heading(t!("ui.song_list_title"));
+            ui.heading(t!("song_list_title"));
 
             ui.separator();
             egui::ScrollArea::vertical()
@@ -144,37 +143,20 @@ impl eframe::App for ManagerApp {
                 ui.label(&current_song.song_sub_name);
                 ui.end_row();
                 ui.separator();
-                ui.label(t!(
-                    "ui.song_author",
-                    author = &current_song.song_author_name
-                ));
-                ui.label(t!(
-                    "ui.level_author",
-                    author = &current_song.level_author_name
-                ));
-                ui.label(t!(
-                    "ui.bpm",
-                    bpm = &current_song.beats_per_minute.to_string()
-                ));
+                ui.label(t!("song_author", author = &current_song.song_author_name));
+                ui.label(t!("level_author", author = &current_song.level_author_name));
+                ui.label(t!("bpm", bpm = &current_song.beats_per_minute.to_string()));
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label(t!("ui.level_id", id = &current_song.level_id));
-                    if ui
-                        .button("📋")
-                        .on_hover_text(t!("ui.click_to_copy"))
-                        .clicked()
-                    {
+                    ui.label(t!("level_id", id = &current_song.level_id));
+                    if ui.button("📋").on_hover_text(t!("click_to_copy")).clicked() {
                         ui.output().copied_text = current_song.level_id.to_string();
                     }
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label(t!("ui.level_hash", hash = &current_song.level_hash));
-                    if ui
-                        .button("📋")
-                        .on_hover_text(t!("ui.click_to_copy"))
-                        .clicked()
-                    {
+                    ui.label(t!("level_hash", hash = &current_song.level_hash));
+                    if ui.button("📋").on_hover_text(t!("click_to_copy")).clicked() {
                         ui.output().copied_text = current_song.level_hash.to_string();
                     }
                 });
@@ -200,7 +182,7 @@ impl eframe::App for ManagerApp {
                                     ui.horizontal_wrapped(|ui| {
                                         ui.spacing_mut().item_spacing.x = 0.0;
                                         ui.label(&difficulty_beatmap.difficulty).on_hover_text(t!(
-                                            "ui.difficulty_rank",
+                                            "difficulty_rank",
                                             rank = &difficulty_beatmap.difficulty_rank.to_string()
                                         ));
                                     });
@@ -211,24 +193,22 @@ impl eframe::App for ManagerApp {
                     ui.separator();
                 }
             } else {
-                ui.heading(t!("ui.no_song_hint"));
+                ui.heading(t!("no_song_hint"));
             }
             egui::warn_if_debug_build(ui);
         });
 
         egui::SidePanel::right("pending_change_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(t!("ui.pending_change_list_title"));
+                ui.heading(t!("pending_change_list_title"));
                 ui.separator();
-                if ui.button(t!("ui.commit_changes")).clicked() {
-                    if !pending_changes.is_empty() {
-                        apply_changes(pending_changes);
-                        *pending_changes = HashMap::new();
-                        *current_song = None;
-                        *list_outdated = true;
-                    }
+                if ui.button(t!("commit_changes")).clicked() && !pending_changes.is_empty() {
+                    apply_changes(pending_changes);
+                    *pending_changes = HashMap::new();
+                    *current_song = None;
+                    *list_outdated = true;
                 }
-                if ui.button(t!("ui.reset_changes")).clicked() {
+                if ui.button(t!("reset_changes")).clicked() {
                     *pending_changes = HashMap::new();
                 }
             });
@@ -240,10 +220,10 @@ impl eframe::App for ManagerApp {
                     .column(Size::exact(10.0))
                     .header(20.0, |mut header| {
                         header.col(|ui| {
-                            ui.heading(t!("ui.pending_action_title"));
+                            ui.heading(t!("pending_action_title"));
                         });
                         header.col(|ui| {
-                            ui.heading(t!("ui.pending_song_title"));
+                            ui.heading(t!("pending_song_title"));
                         });
                         header.col(|ui| {
                             ui.heading("");
@@ -254,8 +234,8 @@ impl eframe::App for ManagerApp {
                             body.row(30.0, |mut row| {
                                 row.col(|ui| {
                                     ui.label(match action {
-                                        Action::DELETE => t!("ui.delete"),
-                                        Action::RENAME => t!("ui.rename"),
+                                        Action::Delete => t!("delete"),
+                                        Action::Rename => t!("rename"),
                                     });
                                 });
                                 row.col(|ui| {
@@ -287,15 +267,11 @@ impl eframe::App for ManagerApp {
                     song.get_canonical_name()
                 );
                 ui.horizontal(|ui| {
-                    if ui.button(t!("ui.delete")).clicked() {
-                        pending_changes.insert(song.clone(), Action::DELETE);
+                    if ui.button(t!("delete")).clicked() {
+                        pending_changes.insert(song.clone(), Action::Delete);
                     }
-                    if ui
-                        .button(t!("ui.rename"))
-                        .on_hover_text(rename_tip)
-                        .clicked()
-                    {
-                        pending_changes.insert(song.clone(), Action::RENAME);
+                    if ui.button(t!("rename")).on_hover_text(rename_tip).clicked() {
+                        pending_changes.insert(song.clone(), Action::Rename);
                     }
                 });
                 if let Some(stream_handle) = stream_handle {

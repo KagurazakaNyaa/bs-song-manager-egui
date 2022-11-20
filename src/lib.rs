@@ -1,4 +1,3 @@
-#![warn(clippy::all)]
 #[macro_use]
 extern crate rust_i18n;
 i18n!("locales");
@@ -7,53 +6,47 @@ mod app;
 pub use app::ManagerApp;
 use deunicode::deunicode;
 
-use hyper::{body::Buf, Body, Request};
 use log::{debug, error, info, warn};
+use native_tls::{TlsConnector, TlsStream};
 use regex::Regex;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
+use std::fs::{read_dir, File};
+use std::io::Write;
+use std::net::TcpStream;
+use std::sync::RwLock;
+use std::thread;
 use std::{
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
-use tokio_native_tls::TlsStream;
 
 static CONCURRENT_THREADS: usize = 16;
 static DEFAULT_ID: &str = "00000";
 static BEATSAVER_DOMAIN: &str = "api.beatsaver.com";
 static BEATSAVER_ADDR: &str = "api.beatsaver.com:443";
 
-async fn get_api_connection() -> Result<TlsStream<TcpStream>, Box<dyn std::error::Error>> {
+fn get_api_connection() -> Result<TlsStream<TcpStream>, Box<dyn std::error::Error>> {
+    let connector = TlsConnector::new().unwrap();
     debug!("Connecting to {}...", BEATSAVER_ADDR);
-    let socket = TcpStream::connect(BEATSAVER_ADDR).await?; //TODO fix hang
+    let stream = TcpStream::connect(BEATSAVER_ADDR)?;
     debug!("Connected to {}.", BEATSAVER_ADDR);
-    let cx = match native_tls::TlsConnector::builder().build() {
-        Ok(cx) => cx,
-        Err(_) => todo!(),
-    };
-    let cx = tokio_native_tls::TlsConnector::from(cx);
-    let stream = cx.connect(BEATSAVER_DOMAIN, socket).await?;
+    let stream = connector.connect(BEATSAVER_DOMAIN, stream)?;
     Ok(stream)
 }
 
-async fn get_id_by_hash(hash: &str) -> String {
+fn get_id_by_hash(hash: &str) -> String {
     debug!("Trying to get id by hash {}", hash);
     let default_id = String::from(DEFAULT_ID);
-    let req = match Request::builder()
-        .uri(format!("/maps/hash/{}", hash))
-        .header(hyper::header::HOST, BEATSAVER_DOMAIN)
-        .body(Body::empty())
-    {
-        Ok(req) => req,
-        Err(_) => todo!(),
-    };
+    let request = format!(
+        "GET /maps/hash/{} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
+        hash, BEATSAVER_DOMAIN
+    );
     debug!("Trying to get connection to api server.");
-    let stream = match get_api_connection().await {
+    let mut stream = match get_api_connection() {
         Ok(stream) => stream,
         Err(error) => {
             warn!("Get id for hash {} failed.{}", hash, error);
@@ -61,21 +54,30 @@ async fn get_id_by_hash(hash: &str) -> String {
         }
     };
     debug!("Get connection successful.");
-    let (mut sender, _conn) = match hyper::client::conn::handshake(stream).await {
-        Ok((sender, conn)) => (sender, conn),
-        Err(_) => todo!(),
+    debug!("Sending request {}.", request);
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        warn!("Failed to send request to api server.{}", error);
+        return default_id;
+    }
+    debug!("Send request done.");
+    let mut resp = vec![];
+    stream.read_to_end(&mut resp).unwrap();
+    let body = String::from_utf8_lossy(&resp);
+    let body = match body.find("\r\n\r\n") {
+        Some(index) => body[index..].to_string(),
+        None => {
+            warn!("Failed to parse response.{}", body);
+            return default_id;
+        }
     };
-    let body = match sender.send_request(req).await {
-        Ok(res) => match hyper::body::aggregate(res).await {
-            Ok(body) => body,
-            Err(_) => todo!(),
-        },
-        Err(_) => todo!(),
-    };
+    debug!("API server return response {}", body);
 
-    let content: Value = match serde_json::from_reader(body.reader()) {
+    let content: Value = match serde_json::from_str(body.as_ref()) {
         Ok(content) => content,
-        Err(_) => todo!(),
+        Err(error) => {
+            warn!("Failed to parse json.{}", error);
+            return default_id;
+        }
     };
 
     let id = match content["id"].as_str() {
@@ -191,12 +193,12 @@ impl Hash for Song {
 }
 
 impl Song {
-    pub async fn from_path(
+    pub fn from_path(
         song_path: &PathBuf,
-        id_cache: &Arc<Mutex<HashMap<String, String>>>,
+        id_cache: &Arc<RwLock<HashMap<String, String>>>,
     ) -> Option<Self> {
-        let file_list = tokio::fs::read_dir(song_path).await;
-        let mut file_list = match file_list {
+        let file_list = read_dir(song_path);
+        let file_list = match file_list {
             Ok(entry) => entry,
             Err(error) => {
                 error!("Read file list failed. {}", error);
@@ -204,24 +206,11 @@ impl Song {
             }
         };
         let mut hash_data: Vec<u8> = Vec::new();
-        loop {
-            let entry = file_list.next_entry().await;
-            let entry = match entry {
-                Ok(entry) => match entry {
-                    Some(entry) => entry,
-                    None => {
-                        break;
-                    }
-                },
-                Err(error) => {
-                    error!("Read file list failed. {}", error);
-                    return None;
-                }
-            };
+        for entry in file_list.flatten() {
             if !entry.path().is_file() || !entry.file_name().eq_ignore_ascii_case("info.dat") {
                 continue;
             }
-            let infodat_file = tokio::fs::File::open(entry.path()).await;
+            let infodat_file = File::open(entry.path());
             let mut infodat_file = match infodat_file {
                 Ok(file) => file,
                 Err(error) => {
@@ -230,7 +219,7 @@ impl Song {
                 }
             };
             let mut buffer = String::new();
-            if let Err(error) = infodat_file.read_to_string(&mut buffer).await {
+            if let Err(error) = infodat_file.read_to_string(&mut buffer) {
                 error!("Read info.dat failed. {}", error);
                 return None;
             };
@@ -252,7 +241,7 @@ impl Song {
                 for beatmap in &data.difficulty_beatmaps {
                     let mut beatmap_file_path = song_path.clone();
                     beatmap_file_path.push(beatmap.beatmap_filename.clone());
-                    let beatmap_file = tokio::fs::File::open(beatmap_file_path).await;
+                    let beatmap_file = File::open(beatmap_file_path);
                     let mut beatmap_file = match beatmap_file {
                         Ok(file) => file,
                         Err(error) => {
@@ -261,7 +250,7 @@ impl Song {
                         }
                     };
                     let mut buffer = String::new();
-                    if let Err(error) = beatmap_file.read_to_string(&mut buffer).await {
+                    if let Err(error) = beatmap_file.read_to_string(&mut buffer) {
                         error!("Read beatmap file failed. {}", error);
                         return None;
                     }
@@ -270,11 +259,11 @@ impl Song {
                 difficulty_beatmap_sets.push(data);
             }
             let level_hash = hash_string(&hash_data);
-            let level_id = match id_cache.lock() {
+            let level_id = match id_cache.write() {
                 Ok(mut id_cache) => match id_cache.get(&level_hash) {
                     Some(id) => id.clone(),
                     None => {
-                        let id = get_id_by_hash(level_hash.as_str()).await;
+                        let id = get_id_by_hash(level_hash.as_str());
                         if id != DEFAULT_ID {
                             id_cache.insert(level_hash.clone(), id.clone());
                         }
@@ -283,7 +272,7 @@ impl Song {
                 },
                 Err(error) => {
                     warn!("Failed to get cache lock.{}", error);
-                    get_id_by_hash(level_hash.as_str()).await
+                    get_id_by_hash(level_hash.as_str())
                 }
             };
             let result = Song {
@@ -335,8 +324,8 @@ impl Song {
     }
     /// The canonical naming of the folder refers to the naming method of the song package shared by WGzeyu(https://bs.wgzeyu.com/).
     fn get_canonical_name(&self) -> String {
-        let name = deunicode(&self.song_name.as_str());
-        let author = deunicode(&self.level_author_name.as_str());
+        let name = deunicode(self.song_name.as_str());
+        let author = deunicode(self.level_author_name.as_str());
         let regex = Regex::new(r#"[~#"%&*:<>?/\\{|}]+"#).unwrap();
         regex
             .replace_all(
@@ -350,7 +339,7 @@ impl Song {
 fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
     let mut song_list = Vec::new();
     let mut invalid_path = HashSet::new();
-    let song_path_entry = std::fs::read_dir(song_path);
+    let song_path_entry = read_dir(song_path);
     let song_path_entry = match song_path_entry {
         Ok(entry) => entry,
         Err(error) => {
@@ -358,26 +347,19 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
             return (song_list, invalid_path);
         }
     };
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            error!("Init tokio runtime failed. {}", error);
-            return (song_list, invalid_path);
-        }
-    };
-    let shared_song_list = Arc::new(Mutex::new(Vec::new()));
-    let shared_invalid_path = Arc::new(Mutex::new(HashSet::new()));
-    let cached_id = Arc::new(Mutex::new(HashMap::new()));
-    let mut future_list = Vec::new();
+    let shared_song_list = Arc::new(RwLock::new(Vec::new()));
+    let shared_invalid_path = Arc::new(RwLock::new(HashSet::new()));
+    let cached_id = Arc::new(RwLock::new(HashMap::new()));
+    let mut task_list = Vec::new();
 
     let mut cache_id_file = PathBuf::new();
-    cache_id_file.push(song_path.clone());
+    cache_id_file.push(song_path);
     cache_id_file.push("id.cache");
     match std::fs::File::open(cache_id_file.as_path()) {
         Ok(cache_id_file) => {
             match serde_json::from_reader(cache_id_file) {
                 Ok(data) => {
-                    *cached_id.lock().unwrap() = data;
+                    *cached_id.write().unwrap() = data;
                 }
                 Err(error) => {
                     warn!("Parse id cache failed. {}", error);
@@ -399,18 +381,24 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
         };
         let song_folder_path = entry.path();
         if song_folder_path.is_dir() {
-            let task = async {
+            let cache_id_cloned = cached_id.clone();
+            let shared_song_list_cloned = shared_song_list.clone();
+            let shared_invalid_path_cloned = shared_invalid_path.clone();
+            let task = move || {
                 debug!(
                     "Loading song from {}.",
                     &song_folder_path.as_path().display()
                 );
-                if let Some(song) = Song::from_path(&song_folder_path, &cached_id).await {
-                    shared_song_list.lock().unwrap().push(song);
+                if let Some(song) = Song::from_path(&song_folder_path, &cache_id_cloned) {
+                    shared_song_list_cloned.write().unwrap().push(song);
                 } else {
-                    shared_invalid_path.lock().unwrap().insert(song_folder_path);
+                    shared_invalid_path_cloned
+                        .write()
+                        .unwrap()
+                        .insert(song_folder_path);
                 }
             };
-            future_list.push(task);
+            task_list.push(task);
         } else if !song_folder_path.ends_with("id.cache") {
             warn!(
                 "Entry {} is not a directory.",
@@ -420,25 +408,26 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
         }
     }
 
-    while !future_list.is_empty() {
-        let mut task_list = Vec::new();
-        while task_list.len() < CONCURRENT_THREADS {
-            match future_list.pop() {
-                Some(task) => task_list.push(task),
-                None => break,
-            };
+    let mut task_pending = Vec::new();
+    for task in task_list {
+        if task_pending.len() < CONCURRENT_THREADS {
+            let task = thread::spawn(task);
+            task_pending.push(task);
+        } else {
+            for task in task_pending {
+                task.join().unwrap();
+            }
+            task_pending = Vec::new()
         }
-        let all_task = futures::future::join_all(task_list);
-        runtime.block_on(all_task);
     }
 
-    song_list = shared_song_list.lock().unwrap().clone();
+    song_list = shared_song_list.read().unwrap().clone();
     song_list.sort_by(|a, b| a.song_name.cmp(&b.song_name));
-    invalid_path.extend(shared_invalid_path.lock().unwrap().clone());
+    invalid_path.extend(shared_invalid_path.read().unwrap().clone());
 
     match std::fs::File::create(cache_id_file.as_path()) {
         Ok(cache_id_file) => {
-            let id_cache = &*cached_id.lock().unwrap();
+            let id_cache = &*cached_id.read().unwrap();
             if let Err(error) = serde_json::to_writer(cache_id_file, id_cache) {
                 warn!("Save id cache failed.{}", error);
             }
@@ -452,15 +441,15 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
 
 #[derive(Clone, PartialEq, Eq)]
 enum Action {
-    DELETE,
-    RENAME,
+    Delete,
+    Rename,
 }
 
 impl Action {
     fn as_str(&self) -> &'static str {
         match self {
-            Action::DELETE => "Delete",
-            Action::RENAME => "Rename",
+            Action::Delete => "Delete",
+            Action::Rename => "Rename",
         }
     }
 }
@@ -468,11 +457,11 @@ impl Action {
 fn apply_changes(pending_changes: &HashMap<Song, Action>) {
     for (song, action) in pending_changes {
         if let Err(error) = match action {
-            Action::DELETE => {
+            Action::Delete => {
                 info!("Deleting {}", song.song_folder_path.as_path().display());
                 std::fs::remove_dir_all(song.song_folder_path.as_path())
             }
-            Action::RENAME => {
+            Action::Rename => {
                 if let Some(dst) = song.song_folder_path.parent() {
                     let mut dst = PathBuf::from(dst);
                     dst.push(song.get_canonical_name());
