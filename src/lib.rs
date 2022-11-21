@@ -30,6 +30,7 @@ static CONCURRENT_THREADS_MIN: usize = 8;
 static DEFAULT_ID: &str = "00000";
 static BEATSAVER_DOMAIN: &str = "api.beatsaver.com";
 static BEATSAVER_ADDR: &str = "api.beatsaver.com:443";
+static BEATSAVER_BATCH: usize = 40;
 
 fn get_api_connection() -> Result<TlsStream<TcpStream>, Box<dyn std::error::Error>> {
     let connector = TlsConnector::new().unwrap();
@@ -40,80 +41,109 @@ fn get_api_connection() -> Result<TlsStream<TcpStream>, Box<dyn std::error::Erro
     Ok(stream)
 }
 
-fn get_id_by_hash(hash: &str) -> String {
-    debug!("Trying to get id by hash {}", hash);
-    let default_id = String::from(DEFAULT_ID);
-    let request = format!(
-        "GET /maps/hash/{} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
-        hash, BEATSAVER_DOMAIN
-    );
-    debug!("Trying to get connection to api server.");
-    let mut stream = match get_api_connection() {
-        Ok(stream) => stream,
-        Err(error) => {
-            warn!("Get id for hash {} failed.{}", hash, error);
-            return default_id;
+fn build_requests(mut hashs: VecDeque<String>) -> VecDeque<String> {
+    let mut requests = VecDeque::new();
+    let mut hash_buffer = Vec::new();
+    while !hashs.is_empty() {
+        if hash_buffer.len() < BEATSAVER_BATCH {
+            hash_buffer.push(hashs.pop_front().unwrap());
+        } else {
+            let hash_joined = hash_buffer.join(",");
+            let request = format!(
+                "GET /maps/hash/{} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
+                hash_joined, BEATSAVER_DOMAIN
+            );
+            requests.push_back(request);
+            hash_buffer = Vec::new();
         }
-    };
-    debug!("Get connection successful.");
-    debug!("Sending request...\n{}", request);
-    if let Err(error) = stream.write_all(request.as_bytes()) {
-        warn!("Failed to send request to api server.{}", error);
-        return default_id;
     }
-    debug!("Send request done.");
-    let mut reader = BufReader::new(stream);
-    let mut bytes_to_read: usize = 0;
-    loop {
-        let mut buf = vec![];
-        if let Err(error) = reader.read_until(b'\n', &mut buf) {
-            warn!("Got error when reading http head.{}", error);
-            break;
+    if !hash_buffer.is_empty() {
+        let hash_joined = hash_buffer.join(",");
+        let request = format!(
+            "GET /maps/hash/{} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
+            hash_joined, BEATSAVER_DOMAIN
+        );
+        requests.push_back(request);
+    }
+    requests
+}
+
+fn update_id_cache(mut hashs: VecDeque<String>, id_cache: &Arc<RwLock<HashMap<String, String>>>) {
+    hashs.retain(|hash| !id_cache.read().unwrap().contains_key(hash));
+    let mut request_list = build_requests(hashs);
+    debug!("Trying to get connection to api server.");
+    debug!("Get connection successful.");
+    while !request_list.is_empty() {
+        let mut stream = match get_api_connection() {
+            Ok(stream) => stream,
+            Err(error) => {
+                warn!("Failed to connect api server.{}", error);
+                return;
+            }
+        };
+        let request = request_list.pop_front().unwrap();
+        debug!("Sending request...\n{}", request);
+        if let Err(error) = stream.write_all(request.as_bytes()) {
+            warn!("Failed to send request to api server.{}", error);
+            continue;
         }
-        let head = String::from_utf8_lossy(&buf);
-        debug!("Read head from server: {}", head);
-        if head.starts_with("Content-Length:") {
-            bytes_to_read = match head.split(": ").nth(1) {
-                Some(str) => match str.trim().parse::<usize>() {
-                    Ok(size) => size,
-                    Err(error) => {
-                        warn!("Failed to parse Content-Length.{}", error);
-                        return default_id;
+        debug!("Send request done. Waiting for response...");
+        let mut reader = BufReader::new(stream);
+        let mut bytes_to_read: usize = 0;
+        loop {
+            let mut buf = vec![];
+            if let Err(error) = reader.read_until(b'\n', &mut buf) {
+                warn!("Got error when reading HTTP head.{}", error);
+                break;
+            }
+            let head = String::from_utf8_lossy(&buf);
+            debug!("Read head from server: {}", head);
+            if head.starts_with("Content-Length:") {
+                bytes_to_read = match head.split(": ").nth(1) {
+                    Some(str) => match str.trim().parse::<usize>() {
+                        Ok(size) => size,
+                        Err(error) => {
+                            warn!("Failed to parse Content-Length.{}", error);
+                            break;
+                        }
+                    },
+                    None => {
+                        warn!("Failed to parse Content-Length.");
+                        break;
                     }
-                },
-                None => {
-                    warn!("Failed to parse Content-Length.");
-                    return default_id;
+                };
+                debug!("bytes_to_read={}", bytes_to_read);
+            }
+            if head.trim().is_empty() {
+                break;
+            }
+        }
+        if bytes_to_read != 0 {
+            let mut resp = vec![0u8; bytes_to_read];
+            if let Err(error) = reader.read_exact(&mut resp) {
+                warn!("Got error when reading http body.{}", error);
+                continue;
+            }
+            let body = String::from_utf8_lossy(&resp);
+            debug!("API server return response.\n{}", body);
+
+            let content: Value = match serde_json::from_str(body.as_ref()) {
+                Ok(content) => content,
+                Err(error) => {
+                    warn!("Failed to parse json.{}", error);
+                    continue;
                 }
             };
-            debug!("bytes_to_read={}", bytes_to_read);
-        }
-        if head.trim().is_empty() {
-            break;
+            for (hash, value) in content.as_object().unwrap() {
+                let id = match value["id"].as_str() {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                debug!("Got level id {} for hash {}", id, hash);
+                id_cache.write().unwrap().insert(hash.clone(), id);
+            }
         }
     }
-    let mut resp = vec![0u8; bytes_to_read];
-    if let Err(error) = reader.read_exact(&mut resp) {
-        warn!("Got error when reading http body.{}", error);
-        return default_id;
-    }
-    let body = String::from_utf8_lossy(&resp);
-    debug!("API server return response.\n{}", body);
-
-    let content: Value = match serde_json::from_str(body.as_ref()) {
-        Ok(content) => content,
-        Err(error) => {
-            warn!("Failed to parse json.{}", error);
-            return default_id;
-        }
-    };
-
-    let id = match content["id"].as_str() {
-        Some(id) => id.to_string(),
-        None => default_id,
-    };
-    debug!("Got level id {} for hash {}", id, hash);
-    id
 }
 
 fn hash_string(data: &Vec<u8>) -> String {
@@ -223,6 +253,7 @@ impl Hash for Song {
 impl Song {
     pub fn from_path(
         song_path: &PathBuf,
+        pending_hash_list: &Arc<RwLock<VecDeque<String>>>,
         id_cache: &Arc<RwLock<HashMap<String, String>>>,
     ) -> Option<Self> {
         let file_list = read_dir(song_path);
@@ -288,19 +319,19 @@ impl Song {
             }
             let level_hash = hash_string(&hash_data);
             let level_id = match id_cache.write() {
-                Ok(mut id_cache) => match id_cache.get(&level_hash) {
+                Ok(id_cache) => match id_cache.get(&level_hash) {
                     Some(id) => id.clone(),
                     None => {
-                        let id = get_id_by_hash(level_hash.as_str());
-                        if id != DEFAULT_ID {
-                            id_cache.insert(level_hash.clone(), id.clone());
-                        }
-                        id
+                        pending_hash_list
+                            .write()
+                            .unwrap()
+                            .push_back(level_hash.clone());
+                        DEFAULT_ID.to_string()
                     }
                 },
                 Err(error) => {
                     warn!("Failed to get cache lock.{}", error);
-                    get_id_by_hash(level_hash.as_str())
+                    DEFAULT_ID.to_string()
                 }
             };
             let result = Song {
@@ -377,6 +408,7 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
     };
     let shared_song_list = Arc::new(RwLock::new(Vec::new()));
     let shared_invalid_path = Arc::new(RwLock::new(HashSet::new()));
+    let pending_hash_list = Arc::new(RwLock::new(VecDeque::new()));
     let cached_id = Arc::new(RwLock::new(HashMap::new()));
     let mut task_list = Vec::new();
 
@@ -409,6 +441,7 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
         };
         let song_folder_path = entry.path();
         if song_folder_path.is_dir() {
+            let pending_hash_list_cloned = pending_hash_list.clone();
             let cache_id_cloned = cached_id.clone();
             let shared_song_list_cloned = shared_song_list.clone();
             let shared_invalid_path_cloned = shared_invalid_path.clone();
@@ -417,7 +450,11 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
                     "Loading song from {}.",
                     &song_folder_path.as_path().display()
                 );
-                if let Some(song) = Song::from_path(&song_folder_path, &cache_id_cloned) {
+                if let Some(song) = Song::from_path(
+                    &song_folder_path,
+                    &pending_hash_list_cloned,
+                    &cache_id_cloned,
+                ) {
                     shared_song_list_cloned.write().unwrap().push(song);
                 } else {
                     shared_invalid_path_cloned
@@ -453,7 +490,22 @@ fn generate_song_list(song_path: &Path) -> (Vec<Song>, HashSet<PathBuf>) {
         }
     }
 
-    song_list = shared_song_list.read().unwrap().clone();
+    if !pending_hash_list.read().unwrap().is_empty() {
+        update_id_cache(pending_hash_list.read().unwrap().clone(), &cached_id);
+    }
+    for mut song in shared_song_list.read().unwrap().clone() {
+        if song.level_id == DEFAULT_ID {
+            song.level_id = cached_id
+                .read()
+                .unwrap()
+                .clone()
+                .get(&song.level_hash)
+                .unwrap_or(&DEFAULT_ID.to_string())
+                .clone();
+        }
+        song_list.push(song);
+    }
+
     song_list.sort_by(|a, b| a.song_name.cmp(&b.song_name));
     invalid_path.extend(shared_invalid_path.read().unwrap().clone());
 
