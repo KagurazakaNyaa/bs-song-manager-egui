@@ -1,5 +1,5 @@
 use egui::Vec2;
-use egui_extras::{RetainedImage, Column, TableBuilder};
+use egui_extras::{Column, RetainedImage, TableBuilder};
 use log::warn;
 use rfd::FileDialog;
 use rodio::{OutputStream, OutputStreamHandle, Sink};
