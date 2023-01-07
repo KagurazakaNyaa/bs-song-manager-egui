@@ -3,22 +3,22 @@ name = "bs_song_manager"
 version = "0.0.1"
 authors = ["Kagurazaka Nyaa <dev@kagurazakanyaa.com>"]
 edition = "2021"
-rust-version = "1.60"
+rust-version = "1.66"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 
 [dependencies]
 log = "0.4"
-egui = "0.19.0"
-eframe = "0.19.0"
+egui = "0.20.1"
+eframe = "0.20.1"
 serde_json = "1.0"
 tracing-subscriber = "0.3"
 rfd = "0.10.0"
 rodio = { version = "0.16.0", default-features = false, features = ["vorbis"] }
 sha-1 = "0.10.0"
 hex = "0.4.3"
-egui_extras = { version = "0.19.0", features = ["image"] }
+egui_extras = { version = "0.20.0", features = ["image"] }
 image = { version = "0.24", default-features = false, features = [
   "jpeg",
   "png",

@@ -1,5 +1,5 @@
 use egui::Vec2;
-use egui_extras::{RetainedImage, Size, TableBuilder};
+use egui_extras::{RetainedImage, Column, TableBuilder};
 use log::warn;
 use rfd::FileDialog;
 use rodio::{OutputStream, OutputStreamHandle, Sink};
@@ -215,9 +215,9 @@ impl eframe::App for ManagerApp {
             if !pending_changes.is_empty() {
                 let mut withdraw_list = HashMap::new();
                 TableBuilder::new(ui)
-                    .column(Size::exact(40.0))
-                    .column(Size::remainder().at_least(40.0))
-                    .column(Size::exact(10.0))
+                    .column(Column::auto_with_initial_suggestion(40.0))
+                    .column(Column::remainder().at_least(40.0))
+                    .column(Column::auto_with_initial_suggestion(10.0))
                     .header(20.0, |mut header| {
                         header.col(|ui| {
                             ui.heading(t!("pending_action_title"));
